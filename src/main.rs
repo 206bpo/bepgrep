@@ -1,12 +1,12 @@
 use std::{
     env,
-    fs::{self, File},
+    fs::{self, DirEntry, File},
     io::{self, BufRead, BufReader, BufWriter, Write},
     panic,
     path::PathBuf,
-    sync::Arc,
-    thread,
 };
+
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 struct Config {
     query: String,
@@ -28,18 +28,11 @@ impl Config {
     }
     fn parse(args: &[String]) -> Result<Config, UserError> {
         let arg_len = args.len();
-        if arg_len == 3 && &args[0] == "dir" {
-            let path = PathBuf::from(&args[2]);
-            Ok(Config {
-                query: args[1].clone(),
-                is_dir: true,
-                path,
-            })
-        } else if arg_len == 2 {
+        if arg_len == 2 {
             let path = PathBuf::from(&args[1]);
             Ok(Config {
                 query: args[0].clone(),
-                is_dir: false,
+                is_dir: path.is_dir(),
                 path,
             })
         } else if arg_len > 3 {
@@ -54,55 +47,10 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let config: Config = Config::new(&args);
     if config.is_dir {
-        let res = search_directory(config.path, Arc::from(config.query));
-        for entry in res {
-            print!("{}", entry);
-        }
+        search_directory(config.path, &config.query);
     } else {
-        let mut file = get_file_as_buffer(&config.path);
-        print_occurances(&mut file, &config.query);
+        print_occurances(config.path, &config.query);
     }
-}
-
-fn print_occurances(file: &mut BufReader<File>, query: &str) {
-    let stdout = io::stdout();
-    let mut buf_writer = BufWriter::with_capacity(128 * 1024, stdout.lock());
-    let mut str_buf = String::with_capacity(1000);
-    loop {
-        match file.read_line(&mut str_buf) {
-            Ok(0) => {
-                break;
-            }
-            Ok(_) => {}
-            Err(e) => panic!("Fuck: {}", e),
-        }
-        if str_buf.contains(query) {
-            write!(buf_writer, "{}", str_buf);
-        }
-        str_buf.clear();
-    }
-}
-
-fn get_occurances_in_file(path: &PathBuf, query: &Arc<String>) -> Option<Vec<String>> {
-    let mut str_buf = String::with_capacity(1000);
-    let mut res: Vec<String> = Vec::new();
-    let mut file = get_file_as_buffer(path);
-    loop {
-        match file.read_line(&mut str_buf) {
-            Ok(0) => {
-                break;
-            }
-            Ok(_) => {}
-            Err(_) => {
-                return None;
-            }
-        }
-        if str_buf.contains(query.as_str()) {
-            res.push(str_buf.clone());
-        }
-        str_buf.clear();
-    }
-    Some(res)
 }
 
 fn get_file_as_buffer(path: &PathBuf) -> BufReader<File> {
@@ -115,29 +63,48 @@ fn get_file_as_buffer(path: &PathBuf) -> BufReader<File> {
     BufReader::new(file)
 }
 
-fn search_directory(path: PathBuf, query: Arc<String>) -> Vec<String> {
-    let mut results: Vec<String> = Vec::new();
-    let mut child_handles = Vec::new();
-
-    for entry in fs::read_dir(&path).unwrap() {
-        let entry = entry.unwrap();
-        let entry_path = entry.path();
-
-        if entry_path.is_dir() {
-            let query = Arc::clone(&query);
-            let handle = thread::spawn(move || search_directory(entry_path, query));
-            child_handles.push(handle);
-        } else {
-            let extender = get_occurances_in_file(&entry_path, &query);
-            match get_occurances_in_file(&entry_path, &query) {
-                Some(x) => results.extend(x),
-                None => {}
-            };
+fn print_occurances(file_path: PathBuf, query: &str) {
+    let mut file = get_file_as_buffer(&file_path);
+    let stdout = io::stdout();
+    let mut buf_writer = BufWriter::with_capacity(128 * 1024, stdout.lock());
+    let mut str_buf = String::with_capacity(1000);
+    let mut line: u32 = 0;
+    loop {
+        match file.read_line(&mut str_buf) {
+            Ok(0) => {
+                break;
+            }
+            Ok(_) => {}
+            Err(_) => return,
         }
+        if str_buf.contains(query) {
+            // writeln!(
+            //     buf_writer,
+            //     "[{}:{}]{}",
+            //     file_path.display().to_string(),
+            //     line,
+            //     str_buf
+            // );
+        }
+        str_buf.clear();
+        line += 1;
     }
+}
 
-    for handle in child_handles {
-        results.extend(handle.join().unwrap());
-    }
-    results
+fn search_directory(path: PathBuf, query: &str) {
+    let entries: Vec<DirEntry> = fs::read_dir(&path)
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+
+    let _: Vec<_> = entries
+        .par_iter()
+        .map(|element| {
+            if element.path().is_dir() {
+                search_directory(element.path(), query);
+            } else {
+                print_occurances(element.path(), query);
+            }
+        })
+        .collect();
 }
