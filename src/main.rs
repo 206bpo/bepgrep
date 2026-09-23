@@ -78,13 +78,13 @@ fn print_occurances(file_path: PathBuf, query: &str) {
             Err(_) => return,
         }
         if str_buf.contains(query) {
-            // writeln!(
-            //     buf_writer,
-            //     "[{}:{}]{}",
-            //     file_path.display().to_string(),
-            //     line,
-            //     str_buf
-            // );
+            writeln!(
+                buf_writer,
+                "[{}:{}]{}",
+                file_path.display().to_string(),
+                line,
+                str_buf
+            );
         }
         str_buf.clear();
         line += 1;
