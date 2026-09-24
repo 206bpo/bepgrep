@@ -45,7 +45,6 @@ impl Config {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    dbg!(&args);
     let config: Config = Config::new(&args);
     if config.path.to_str() == Some("-") {
         find_and_print_occurances(&config.query);
