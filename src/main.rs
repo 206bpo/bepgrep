@@ -1,7 +1,7 @@
 use std::{
     env,
     fs::{self, DirEntry, File},
-    io::{self, BufRead, BufReader, BufWriter, Write},
+    io::{self, BufRead, BufReader, BufWriter, Read, Write, stdin},
     panic,
     path::PathBuf,
 };
@@ -29,9 +29,9 @@ impl Config {
     fn parse(args: &[String]) -> Result<Config, UserError> {
         let arg_len = args.len();
         if arg_len == 2 {
-            let path = PathBuf::from(&args[1]);
+            let path = PathBuf::from(&args[0]);
             Ok(Config {
-                query: args[0].clone(),
+                query: args[1].clone(),
                 is_dir: path.is_dir(),
                 path,
             })
@@ -45,8 +45,11 @@ impl Config {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+    dbg!(&args);
     let config: Config = Config::new(&args);
-    if config.is_dir {
+    if config.path.to_str() == Some("-") {
+        find_and_print_occurances(&config.query);
+    } else if config.is_dir {
         search_directory(config.path, &config.query);
     } else {
         print_occurances(config.path, &config.query);
@@ -61,6 +64,19 @@ fn get_file_as_buffer(path: &PathBuf) -> BufReader<File> {
         }
     };
     BufReader::new(file)
+}
+
+fn find_and_print_occurances(query: &str) {
+    let mut inp = String::with_capacity(128 * 1024);
+    let stdin = io::stdin();
+    stdin.lock().read_to_string(&mut inp).unwrap();
+    let input: Vec<&str> = inp.split_terminator("\n").collect();
+
+    for el in input {
+        if el.contains(query) {
+            println!("{}", el);
+        }
+    }
 }
 
 fn print_occurances(file_path: PathBuf, query: &str) {
