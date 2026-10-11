@@ -1,14 +1,14 @@
-use regex::{Regex, regex};
+use regex::Regex;
 use std::{
     env,
-    fs::{self, DirEntry, File},
+    fs::{self, File},
     io::{self, BufRead, BufReader, BufWriter, Read, Write},
     panic,
     path::PathBuf,
     str::FromStr,
 };
 
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{ParallelBridge, ParallelIterator};
 #[derive(Debug)]
 struct Config {
     query: String,
@@ -32,6 +32,10 @@ impl Config {
             },
         }
     }
+    // TODO
+    //
+    // can not search for anything that is two charachter long and starts with a - as it gets
+    // treated like a flag;
     fn parse(args: Vec<String>) -> Result<Config, UserError> {
         let mut cfg: Config = Config {
             query: String::new(),
@@ -75,32 +79,46 @@ fn main() {
     }
 }
 
-fn get_file_as_buffer(path: &PathBuf) -> BufReader<File> {
+// TODO
+//
+// instead of printing errors to stdio they should be ptinted to stderr;
+fn get_file_as_buffer(path: &PathBuf) -> Option<BufReader<File>> {
     let file = match File::open(path) {
         Ok(f) => f,
         Err(e) => {
-            panic!("Something went wrong while reading the file: {e:?}");
+            println!(
+                "Could not open {:?} because an error occured: \n {:?}",
+                &path, e
+            );
+            return None;
         }
     };
-    BufReader::new(file)
+    Some(BufReader::new(file))
 }
 
+// TODO
+//
+// creation of regex pattern panics when input is not a valid regex pattern even when search_regex is false;
+//
+// large inputs with long lines will cause a OOM error (need to replaxe stdin.lock().lines() like i did in print_occurances)
 fn find_and_print_occurances_from_pipe(query: &str, search_regex: bool) {
-    let mut inp = String::with_capacity(128 * 1024);
     let stdin = io::stdin();
-    stdin.lock().read_to_string(&mut inp).unwrap();
-    let input: Vec<&str> = inp.split_terminator("\n").collect();
+    let inp = stdin.lock().lines();
+    let reg_pattern = Regex::from_str(query).unwrap();
 
-    for el in input {
+    for el in inp {
+        let line = match el {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
         if !search_regex {
-            if el.contains(query) {
-                println!("{}", el.trim());
+            if line.contains(query) {
+                println!("{}", line.trim());
             }
         } else {
-            let reg = Regex::from_str(query).unwrap().find(&el);
-            match reg {
+            match reg_pattern.find(&line) {
                 Some(_) => {
-                    println!("{}", el.trim());
+                    println!("{}", line.trim());
                 }
                 None => {
                     continue;
@@ -110,69 +128,90 @@ fn find_and_print_occurances_from_pipe(query: &str, search_regex: bool) {
     }
 }
 
+// TODO
+//
+// current way of buffered line reading messes with formatting when printing occurances to Terminal;
+// files smaller than the 1000 byte limit never get checked at all;
+//
+// if the remainder of a file is smaller than 1000 bytes it never gets searched;
+//
+// if an occurance is split by the 1000 byte limit of the buffer it gets lost and will never be found;
+//
+// creation of regex pattern panics when input is not a valid regex pattern even when search_regex
+// is false;
+//
+// Line numbering does not work with 1000 byte buffer because currently it counts the
+// amount of times a 1000 byte buffer is read and not the actual line;
+//
+// because stdout.lock() blocks the stdout every other thread has to wait for the stdout to be free
+// again so multithreading does not have any effect because it cant proccess files in parallel;
 fn print_occurances(file_path: PathBuf, query: &str, search_regex: bool) {
-    let mut file = get_file_as_buffer(&file_path);
+    let mut file = match get_file_as_buffer(&file_path) {
+        Some(f) => f,
+        None => {
+            return;
+        }
+    };
     let stdout = io::stdout();
     let mut buf_writer = BufWriter::with_capacity(128 * 1024, stdout.lock());
-    let mut str_buf = String::with_capacity(1000);
+    let mut str_buf: [u8; 1000] = [0; 1000];
+    let reg_pattern = Regex::from_str(query).unwrap();
     let mut line: u32 = 0;
-    loop {
-        match file.read_line(&mut str_buf) {
-            Ok(0) => {
-                break;
-            }
-            Ok(_) => {}
-            Err(_) => return,
-        }
+
+    while file.read_exact(&mut str_buf).is_ok() {
+        let text = String::from_utf8_lossy(&str_buf);
         if !search_regex {
-            if str_buf.contains(query) {
-                writeln!(
+            if text.contains(query) {
+                let _ = write!(
                     buf_writer,
                     "[{}:{}]\t{}",
                     file_path.display(),
                     line,
-                    str_buf.trim()
+                    text.trim()
                 );
             }
         } else {
-            let reg = Regex::from_str(query).unwrap().find(&str_buf);
+            let reg = reg_pattern.find(&text);
             match reg {
                 Some(_) => {
-                    writeln!(
+                    let _ = write!(
                         buf_writer,
                         "[{}:{}]\t{}",
                         file_path.display(),
                         line,
-                        str_buf.trim()
+                        text.trim()
                     );
                 }
                 None => {
-                    str_buf.clear();
                     line += 1;
                     continue;
                 }
             };
         }
-        str_buf.clear();
         line += 1;
     }
-    buf_writer.flush();
+    let _ = buf_writer.flush();
 }
 
 fn search_directory(path: PathBuf, query: &str, regex: bool) {
-    let entries: Vec<DirEntry> = fs::read_dir(&path)
-        .unwrap()
-        .filter_map(Result::ok)
-        .collect();
+    let entries = match fs::read_dir(&path) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
 
-    let _: Vec<_> = entries
-        .par_iter()
-        .map(|element| {
-            if element.path().is_dir() {
-                search_directory(element.path(), query, regex);
-            } else {
-                print_occurances(element.path(), query, false);
+    entries
+        .filter_map(Result::ok)
+        .par_bridge()
+        .for_each(|entry| {
+            let p = entry.path();
+            let t = entry.file_type().unwrap();
+            if t.is_symlink() {
+                return;
             }
-        })
-        .collect();
+            if t.is_dir() {
+                search_directory(p, query, regex);
+            } else if t.is_file() {
+                print_occurances(p, query, regex);
+            }
+        });
 }

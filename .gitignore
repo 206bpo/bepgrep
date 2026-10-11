@@ -1,1 +1,6 @@
 /target
+build-and-paste
+.idea
+.gitignore
+.DS_Store
+.DS_Store
