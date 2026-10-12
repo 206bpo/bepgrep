@@ -2,7 +2,7 @@ use regex::Regex;
 use std::{
     env,
     fs::{self, File},
-    io::{self, BufRead, BufReader, BufWriter, Read, Write},
+    io::{self, BufRead, BufReader, BufWriter, Read, Write, stdout},
     panic,
     path::PathBuf,
     str::FromStr,
@@ -140,9 +140,7 @@ fn find_and_print_occurances_from_pipe(query: &str, search_regex: bool) {
 //
 // Line numbering does not work with 1000 byte buffer because currently it counts the
 // amount of times a 1000 byte buffer is read and not the actual line;
-//
-// because stdout.lock() blocks the stdout every other thread has to wait for the stdout to be free
-// again so multithreading does not have any effect because it cant proccess files in parallel;
+const FLUSHAT: usize = 16 * 1024;
 fn print_occurances(file_path: PathBuf, query: &str, search_regex: bool) {
     let mut file = match get_file_as_buffer(&file_path) {
         Some(f) => f,
@@ -150,48 +148,27 @@ fn print_occurances(file_path: PathBuf, query: &str, search_regex: bool) {
             return;
         }
     };
-    let stdout = io::stdout();
-    let mut buf_writer = BufWriter::with_capacity(128 * 1024, stdout.lock());
+    let mut buf_writer: Vec<u8> = Vec::with_capacity(FLUSHAT);
     let mut str_buf: [u8; 1000] = [0; 1000];
     let reg_pattern = match search_regex {
         true => Some(Regex::from_str(query).unwrap()),
         _ => None,
     };
-    let mut line: u32 = 0;
 
     while file.read_exact(&mut str_buf).is_ok() {
         let text = String::from_utf8_lossy(&str_buf);
-        if !search_regex {
-            if text.contains(query) {
-                let _ = write!(
-                    buf_writer,
-                    "[{}:{}]\t{}",
-                    file_path.display(),
-                    line,
-                    text.trim()
-                );
+        let hit = match &search_regex {
+            true => reg_pattern.as_ref().unwrap().is_match(query),
+            false => text.contains(query),
+        };
+        if hit {
+            let _ = writeln!(buf_writer, "[{}]: {}", file_path.display(), text);
+            if buf_writer.len() >= FLUSHAT {
+                flush_out(&mut buf_writer);
             }
-        } else {
-            let reg = reg_pattern.as_ref().unwrap().find(&text);
-            match reg {
-                Some(_) => {
-                    let _ = write!(
-                        buf_writer,
-                        "[{}:{}]\t{}",
-                        file_path.display(),
-                        line,
-                        text.trim()
-                    );
-                }
-                None => {
-                    line += 1;
-                    continue;
-                }
-            };
         }
-        line += 1;
     }
-    let _ = buf_writer.flush();
+    flush_out(&mut buf_writer);
 }
 
 fn search_directory(path: PathBuf, query: &str, regex: bool) {
@@ -215,4 +192,11 @@ fn search_directory(path: PathBuf, query: &str, regex: bool) {
                 print_occurances(p, query, regex);
             }
         });
+}
+
+fn flush_out(out: &mut Vec<u8>) {
+    let stdout = io::stdout();
+    let mut lock = stdout.lock();
+    let _ = lock.write_all(out);
+    out.clear();
 }
