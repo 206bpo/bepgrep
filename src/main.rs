@@ -98,13 +98,14 @@ fn get_file_as_buffer(path: &PathBuf) -> Option<BufReader<File>> {
 
 // TODO
 //
-// creation of regex pattern panics when input is not a valid regex pattern even when search_regex is false;
-//
 // large inputs with long lines will cause a OOM error (need to replaxe stdin.lock().lines() like i did in print_occurances)
 fn find_and_print_occurances_from_pipe(query: &str, search_regex: bool) {
     let stdin = io::stdin();
     let inp = stdin.lock().lines();
-    let reg_pattern = Regex::from_str(query).unwrap();
+    let reg_pattern = match search_regex {
+        true => Some(Regex::from_str(query).unwrap()),
+        _ => None,
+    };
 
     for el in inp {
         let line = match el {
@@ -116,7 +117,7 @@ fn find_and_print_occurances_from_pipe(query: &str, search_regex: bool) {
                 println!("{}", line.trim());
             }
         } else {
-            match reg_pattern.find(&line) {
+            match reg_pattern.as_ref().unwrap().find(&line) {
                 Some(_) => {
                     println!("{}", line.trim());
                 }
@@ -137,9 +138,6 @@ fn find_and_print_occurances_from_pipe(query: &str, search_regex: bool) {
 //
 // if an occurance is split by the 1000 byte limit of the buffer it gets lost and will never be found;
 //
-// creation of regex pattern panics when input is not a valid regex pattern even when search_regex
-// is false;
-//
 // Line numbering does not work with 1000 byte buffer because currently it counts the
 // amount of times a 1000 byte buffer is read and not the actual line;
 //
@@ -155,7 +153,10 @@ fn print_occurances(file_path: PathBuf, query: &str, search_regex: bool) {
     let stdout = io::stdout();
     let mut buf_writer = BufWriter::with_capacity(128 * 1024, stdout.lock());
     let mut str_buf: [u8; 1000] = [0; 1000];
-    let reg_pattern = Regex::from_str(query).unwrap();
+    let reg_pattern = match search_regex {
+        true => Some(Regex::from_str(query).unwrap()),
+        _ => None,
+    };
     let mut line: u32 = 0;
 
     while file.read_exact(&mut str_buf).is_ok() {
@@ -171,7 +172,7 @@ fn print_occurances(file_path: PathBuf, query: &str, search_regex: bool) {
                 );
             }
         } else {
-            let reg = reg_pattern.find(&text);
+            let reg = reg_pattern.as_ref().unwrap().find(&text);
             match reg {
                 Some(_) => {
                     let _ = write!(
