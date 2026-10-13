@@ -75,7 +75,11 @@ fn main() {
     } else if config.is_dir {
         search_directory(config.path, &config.query, config.search_for_regex);
     } else {
-        print_occurances(config.path, &config.query, config.search_for_regex);
+        find_and_print_occurances_from_filepath(
+            config.path,
+            &config.query,
+            config.search_for_regex,
+        );
     }
 }
 
@@ -131,17 +135,10 @@ fn find_and_print_occurances_from_pipe(query: &str, search_regex: bool) {
 
 // TODO
 //
-// current way of buffered line reading messes with formatting when printing occurances to Terminal;
-// files smaller than the 1000 byte limit never get checked at all;
-//
-// if the remainder of a file is smaller than 1000 bytes it never gets searched;
-//
-// if an occurance is split by the 1000 byte limit of the buffer it gets lost and will never be found;
-//
-// Line numbering does not work with 1000 byte buffer because currently it counts the
-// amount of times a 1000 byte buffer is read and not the actual line;
+//line numbering is messed up, because some lines are read multiple times.
 const FLUSHAT: usize = 16 * 1024;
-fn print_occurances(file_path: PathBuf, query: &str, search_regex: bool) {
+const CHUNKSIZE: usize = 8 * 1024;
+fn find_and_print_occurances_from_filepath(file_path: PathBuf, query: &str, search_regex: bool) {
     let mut file = match get_file_as_buffer(&file_path) {
         Some(f) => f,
         None => {
@@ -149,24 +146,48 @@ fn print_occurances(file_path: PathBuf, query: &str, search_regex: bool) {
         }
     };
     let mut buf_writer: Vec<u8> = Vec::with_capacity(FLUSHAT);
-    let mut str_buf: [u8; 1000] = [0; 1000];
+    let mut file_chunk: Vec<u8> = vec![0; CHUNKSIZE];
+    let mut old_file_chunk = file_chunk.clone();
     let reg_pattern = match search_regex {
         true => Some(Regex::from_str(query).unwrap()),
         _ => None,
     };
+    let mut line_number: u32 = 1;
 
-    while file.read_exact(&mut str_buf).is_ok() {
-        let text = String::from_utf8_lossy(&str_buf);
-        let hit = match &search_regex {
-            true => reg_pattern.as_ref().unwrap().is_match(query),
-            false => text.contains(query),
-        };
-        if hit {
-            let _ = writeln!(buf_writer, "[{}]: {}", file_path.display(), text);
-            if buf_writer.len() >= FLUSHAT {
-                flush_out(&mut buf_writer);
+    while file
+        .read(&mut file_chunk)
+        .is_ok_and(|_| file_chunk[0] != 0_u8)
+    {
+        old_file_chunk.append(&mut file_chunk);
+        let text = match String::from_utf8(old_file_chunk.clone()) {
+            Ok(s) => s,
+            Err(_) => {
+                continue;
             }
+        };
+        let lines = text.split_terminator("\n");
+        for line in lines {
+            let hit = match &search_regex {
+                true => reg_pattern.as_ref().unwrap().is_match(line),
+                false => line.contains(query),
+            };
+            if hit {
+                let _ = writeln!(
+                    buf_writer,
+                    "[{}:{}]: {}",
+                    file_path.display(),
+                    line_number,
+                    line
+                );
+                if buf_writer.len() >= FLUSHAT {
+                    flush_out(&mut buf_writer);
+                }
+            }
+            line_number += 1;
         }
+
+        old_file_chunk = file_chunk.clone();
+        file_chunk = [0_u8; CHUNKSIZE].to_vec();
     }
     flush_out(&mut buf_writer);
 }
@@ -189,7 +210,7 @@ fn search_directory(path: PathBuf, query: &str, regex: bool) {
             if t.is_dir() {
                 search_directory(p, query, regex);
             } else if t.is_file() {
-                print_occurances(p, query, regex);
+                find_and_print_occurances_from_filepath(p, query, regex);
             }
         });
 }
