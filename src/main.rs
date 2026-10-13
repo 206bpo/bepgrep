@@ -13,6 +13,7 @@ use rayon::iter::{ParallelBridge, ParallelIterator};
 struct Config {
     query: String,
     is_dir: bool,
+    search_multithreaded: bool,
     path: PathBuf,
     search_for_regex: bool,
 }
@@ -40,6 +41,7 @@ impl Config {
         let mut cfg: Config = Config {
             query: String::new(),
             is_dir: false,
+            search_multithreaded: false,
             path: PathBuf::new(),
             search_for_regex: false,
         };
@@ -49,7 +51,8 @@ impl Config {
                 let flag = a.to_owned().pop().unwrap();
                 match flag {
                     'e' => cfg.search_for_regex = true,
-                    'r' => cfg.is_dir = true,
+                    'd' => cfg.is_dir = true,
+                    'r' => cfg.search_multithreaded = true,
                     _ => {
                         return Err(UserError::UnknownFlag);
                     }
@@ -73,7 +76,11 @@ fn main() {
     if config.path.to_str() == Some("") {
         find_and_print_occurances_from_pipe(&config.query, config.search_for_regex);
     } else if config.is_dir {
-        search_directory(config.path, &config.query, config.search_for_regex);
+        if config.search_multithreaded {
+            search_directory_multithreaded(config.path, &config.query, config.search_for_regex);
+        } else {
+            search_directory(config.path, &config.query, config.search_for_regex);
+        }
     } else {
         find_and_print_occurances_from_filepath(
             config.path,
@@ -154,10 +161,13 @@ fn find_and_print_occurances_from_filepath(file_path: PathBuf, query: &str, sear
     };
     let mut line_number: u32 = 1;
 
-    while file
-        .read(&mut file_chunk)
-        .is_ok_and(|_| file_chunk[0] != 0_u8)
-    {
+    while file.read(&mut file_chunk).is_ok() {
+        if file_chunk.len() == 0 {
+            return;
+        }
+        if file_chunk[0] == 0 {
+            return;
+        }
         old_file_chunk.append(&mut file_chunk);
         let text = match String::from_utf8(old_file_chunk.clone()) {
             Ok(s) => s,
@@ -192,7 +202,7 @@ fn find_and_print_occurances_from_filepath(file_path: PathBuf, query: &str, sear
     flush_out(&mut buf_writer);
 }
 
-fn search_directory(path: PathBuf, query: &str, regex: bool) {
+fn search_directory_multithreaded(path: PathBuf, query: &str, regex: bool) {
     let entries = match fs::read_dir(&path) {
         Ok(e) => e,
         Err(_) => return,
@@ -208,11 +218,30 @@ fn search_directory(path: PathBuf, query: &str, regex: bool) {
                 return;
             }
             if t.is_dir() {
-                search_directory(p, query, regex);
+                search_directory_multithreaded(p, query, regex);
             } else if t.is_file() {
                 find_and_print_occurances_from_filepath(p, query, regex);
             }
         });
+}
+
+fn search_directory(path: PathBuf, query: &str, regex: bool) {
+    let entries = match fs::read_dir(&path) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let p = entry.path();
+        let t = entry.file_type().unwrap();
+        if t.is_symlink() {
+            return;
+        }
+        if t.is_dir() {
+            search_directory(p, &query, regex);
+        } else if t.is_file() {
+            find_and_print_occurances_from_filepath(p, query, regex);
+        }
+    }
 }
 
 fn flush_out(out: &mut Vec<u8>) {
